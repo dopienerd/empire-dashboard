@@ -6,8 +6,8 @@ from datetime import datetime
 app = Flask(__name__)
 
 # Crypto.com Exchange requires these EXACT keys (not CRYPTOCOM_KEY)
-api_key    = os.environ.get('API_KEY')      # ← must be API_KEY
-api_secret = os.environ.get('API_SECRET')  # ← must be API_SECRET
+api_key    = os.environ.get('NWnhKSMvsqzmCeZ7K3gyPj')      # ← must be API_KEY
+api_secret = os.environ.get('cxakp_g1Qs8v3x3CqqXwVuZdh8Ff')  # ← must be API_SECRET
 
 exchange = ccxt.cryptocom({
     'apiKey': api_key,

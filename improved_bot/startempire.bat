@@ -1,24 +1,19 @@
 @echo off
 title EMPIRE v44 — IMPROVED
 
-:: ── CRYPTO.COM API KEYS ──
-set CRYPTOCOM_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-set CRYPTOCOM_API_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+:: ================================================================
+:: Load keys from .env file (same folder as this script)
+:: ================================================================
+if not exist "%~dp0.env" (
+    echo ERROR: .env file not found!
+    echo Copy .env.example to .env and fill in your real keys.
+    pause
+    exit /b 1
+)
 
-:: ── EVM PRIVATE KEY ──
-set EVM_PRIVATE_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-:: ── SOLANA MULTI-WALLET (ADD AS MANY AS YOU WANT) ──
-set SOL_PRIVATE_KEY_1=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-set SOL_PRIVATE_KEY_2=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-set SOL_PRIVATE_KEY_3=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-set SOL_PRIVATE_KEY_4=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-set SOL_PRIVATE_KEY_5=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-set SOL_PRIVATE_KEY_6=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-set SOL_PRIVATE_KEY_7=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-set SOL_PRIVATE_KEY_8=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-set SOL_PRIVATE_KEY_9=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-:: keep adding — bot will use ALL of them automatically
+for /f "usebackq eol=# tokens=1,* delims==" %%A in ("%~dp0.env") do (
+    if not "%%B"=="" set "%%A=%%B"
+)
 
 echo.
 echo ================================================
@@ -26,7 +21,7 @@ echo   EMPIRE v44 — Starting...
 echo ================================================
 echo.
 
-python main.py
+python "%~dp0main.py"
 
 echo.
 echo Bot stopped. You can close this window now.

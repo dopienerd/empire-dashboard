@@ -191,15 +191,15 @@ def record_trade_result(symbol, pnl_usd, pnl_pct, side="buy"):
 # 6. GLOBAL CONFIG / STATE VARIABLES
 # =========================================================================
 
-# --- HIGH RISK TOLERANCE SETTINGS ---
-MAX_CONCURRENT_POSITIONS = 8
-MAX_MARGIN_POSITIONS = 6
-COOLDOWN_SECONDS = 180
+# --- HIGH RISK / AGGRESSIVE SETTINGS ---
+MAX_CONCURRENT_POSITIONS = 15
+MAX_MARGIN_POSITIONS = 10
+COOLDOWN_SECONDS = 60
 MIN_TRADE_SIZE_USD = 5
 MAX_TRADE_SIZE_USD = 5000
-MIN_24H_VOLUME = 500_000
-WORKER_CAPITAL_FRACTION = 0.40
-TRADE_SIZE_FRACTION = 0.50
+MIN_24H_VOLUME = 50_000
+WORKER_CAPITAL_FRACTION = 0.60
+TRADE_SIZE_FRACTION = 0.70
 
 # --- Position dicts (protected by locks above) ---
 positions = {}
@@ -262,7 +262,7 @@ def get_kelly_fraction(strategy: str) -> float:
         s = _strategy_stats[strategy]
         total = s["wins"] + s["losses"]
         if total < 5:
-            return 0.15
+            return 0.35
         win_rate = s["wins"] / total
         if win_rate <= 0 or win_rate >= 1:
             return 0.15
@@ -527,9 +527,9 @@ def get_trend_filter() -> str:
         close_prev = ohlcv[-2][4]
         close_now = ohlcv[-1][4]
         change = (close_now - close_prev) / close_prev * 100
-        if change > 1.0:
+        if change > 2.5:
             trend = "up"
-        elif change < -1.0:
+        elif change < -2.5:
             trend = "down"
         else:
             trend = "neutral"
@@ -1180,7 +1180,7 @@ def hot_token_scanner_worker():
                     if not ticker or ticker["last"] <= 0:
                         continue
                     vol = ticker.get("quoteVolume", 0) or 0
-                    if vol < 50_000:
+                    if vol < 10_000:
                         continue
                     SEEN_PAIRS.add(sym)
                     HOT_PAIRS.append(sym)
@@ -1196,7 +1196,7 @@ def hot_token_scanner_worker():
                 try:
                     ticker = safe_fetch_ticker(sym)
                     vol = ticker.get("quoteVolume", 0) or 0
-                    if vol < 150_000:
+                    if vol < 25_000:
                         continue
                     volume_leaders.append((sym, vol))
                 except Exception:
@@ -1215,7 +1215,7 @@ def hot_token_scanner_worker():
                 try:
                     ticker = safe_fetch_ticker(sym)
                     vol = ticker.get("quoteVolume", 0) or 0
-                    if vol < 25_000:
+                    if vol < 5_000:
                         HOT_PAIRS.remove(sym)
                 except Exception:
                     continue
@@ -1254,13 +1254,13 @@ def new_listing_sniper_worker():
                     price = ticker.get("last", 0) or 0
                     volume = ticker.get("quoteVolume", 0) or 0
 
-                    if price <= 0 or volume < 100_000:
+                    if price <= 0 or volume < 20_000:
                         SEEN_PAIRS.add(sym)
                         _save_seen_pairs()
                         continue
 
                     trend = get_trend_filter()
-                    if trend == "down" and volume < 500_000:
+                    if trend == "down" and volume < 100_000:
                         SEEN_PAIRS.add(sym)
                         _save_seen_pairs()
                         continue
@@ -1270,7 +1270,7 @@ def new_listing_sniper_worker():
                         _save_seen_pairs()
                         continue
 
-                    capital = max(25.0, get_trade_capital("sniper") * 1.5)
+                    capital = max(10.0, get_trade_capital("sniper") * 1.5)
 
                     msg = f"[SNIPER] NEW LISTING: {sym} @ ${price:.8f} vol ${volume:,.0f} -> ${capital:.2f}"
                     log(msg)
@@ -1350,7 +1350,7 @@ def volume_surge_worker():
                 try:
                     ticker = safe_fetch_ticker(sym)
                     vol = ticker.get("quoteVolume", 0) or 0
-                    if vol < 50_000:
+                    if vol < 15_000:
                         continue
 
                     if sym not in volume_history:
@@ -1366,15 +1366,12 @@ def volume_surge_worker():
                     avg_vol = sum(volume_history[sym]) / len(volume_history[sym])
                     surge = vol / max(avg_vol, 1)
 
-                    if surge >= 3.0:
-                        trend = get_trend_filter()
-                        if trend == "down":
-                            continue
+                    if surge >= 2.0:
                         if not can_trade_symbol(sym):
                             continue
 
                         capital = get_trade_capital("spot")
-                        if capital < 15:
+                        if capital < 5:
                             continue
 
                         log(f"[VOLUME SURGE] {sym} {surge:.1f}x avg -> ${capital:.2f}")
@@ -1416,7 +1413,7 @@ def breakout_worker():
                     low_24h = ticker.get("low", 0) or 0
                     vol = ticker.get("quoteVolume", 0) or 0
 
-                    if price <= 0 or high_24h <= 0 or vol < 300_000:
+                    if price <= 0 or high_24h <= 0 or vol < 50_000:
                         continue
 
                     # Breakout long
@@ -1428,7 +1425,7 @@ def breakout_worker():
                             if not can_trade_symbol(sym):
                                 continue
                             capital = get_trade_capital("spot") * 0.7
-                            if capital > 25:
+                            if capital > 8:
                                 log(f"[BREAKOUT LONG] {sym} +{breakout_pct:.2f}%")
                                 spot_buy(sym, capital, "breakout")
                                 time.sleep(1.2)
@@ -1440,7 +1437,7 @@ def breakout_worker():
                             if get_trend_filter() == "up":
                                 continue
                             capital = get_trade_capital("margin") * 0.6
-                            if capital > 25:
+                            if capital > 8:
                                 log(f"[BREAKDOWN SHORT] {sym} -{breakdown_pct:.2f}%")
                                 margin_sell(sym, capital * 4, "breakdown_short")
                                 time.sleep(1.2)
@@ -1459,19 +1456,19 @@ def breakout_worker():
 # WORKER: Momentum Scalper
 # =========================================================================
 SCALP_CONFIG = {
-    "PROFIT_TARGET_1": 1.8,
-    "PROFIT_TARGET_2": 2.8,
-    "PROFIT_TARGET_3": 4.2,
-    "STOP_LOSS": -1.8,
-    "TRAILING_DROP": 0.9,
-    "MAX_HOLD_SEC": 270,
+    "PROFIT_TARGET_1": 1.5,
+    "PROFIT_TARGET_2": 2.5,
+    "PROFIT_TARGET_3": 4.0,
+    "STOP_LOSS": -2.0,
+    "TRAILING_DROP": 0.8,
+    "MAX_HOLD_SEC": 300,
     "STALE_SEC": 120,
-    "TRADE_PCT": 0.11,
-    "MIN_USD": 12,
-    "MAX_OPEN": 5,
-    "MIN_MOMENTUM": 0.22,
-    "MIN_VOL_USD": 75_000,
-    "SCAN_SEC": 1.8,
+    "TRADE_PCT": 0.15,
+    "MIN_USD": 6,
+    "MAX_OPEN": 8,
+    "MIN_MOMENTUM": 0.15,
+    "MIN_VOL_USD": 20_000,
+    "SCAN_SEC": 1.5,
 }
 
 
@@ -1619,9 +1616,6 @@ def margin_long_worker():
             markets = [s for s in scan_list if s.endswith("/USDT")]
 
             trend = get_trend_filter()
-            if trend == "down":
-                time.sleep(20)
-                continue
 
             for sym in markets:
                 try:
@@ -1636,17 +1630,17 @@ def margin_long_worker():
                     ticker = safe_fetch_ticker(sym)
                     vol = ticker.get("quoteVolume", 0) or 0
 
-                    if change > 2.0 and vol > 100_000:
+                    if change > 1.5 and vol > 30_000:
                         with positions_lock:
                             if sym in positions and positions[sym].get("type") == "margin_long":
                                 continue
                             margin_count = sum(1 for p in positions.values()
                                              if p.get("type") == "margin_long")
-                            if margin_count >= 3:
+                            if margin_count >= 5:
                                 continue
 
                         capital = get_trade_capital("margin")
-                        if capital < 20:
+                        if capital < 6:
                             continue
 
                         log(f"[MARGIN LONG] {sym} +{change:.1f}% vol ${vol:,.0f} -> ${capital:.2f} @ 5x")
@@ -1692,7 +1686,7 @@ def margin_short_worker():
                     ticker = safe_fetch_ticker(sym)
                     vol = ticker.get("quoteVolume", 0) or 0
 
-                    if change <= -2.2 and vol > 400_000:
+                    if change <= -1.8 and vol > 50_000:
                         trend = get_trend_filter()
                         if trend == "up":
                             continue
@@ -1702,11 +1696,11 @@ def margin_short_worker():
                                 continue
                             short_count = sum(1 for p in positions.values()
                                             if p.get("type") == "margin_short")
-                            if short_count >= 3:
+                            if short_count >= 5:
                                 continue
 
                         capital = get_trade_capital("margin") * 0.5
-                        if capital < 25:
+                        if capital < 6:
                             continue
 
                         log(f"[MARGIN SHORT] {sym} {change:.2f}% crash -> ${capital:.2f} @ 4x")
@@ -1736,6 +1730,10 @@ def instant_momentum_worker():
     pairs = [
         "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT",
         "DOGE/USDT", "ADA/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT",
+        "MATIC/USDT", "SHIB/USDT", "UNI/USDT", "ATOM/USDT", "FIL/USDT",
+        "APT/USDT", "ARB/USDT", "OP/USDT", "SUI/USDT", "NEAR/USDT",
+        "INJ/USDT", "TIA/USDT", "SEI/USDT", "PEPE/USDT", "WIF/USDT",
+        "FET/USDT", "RENDER/USDT", "ONDO/USDT", "JUP/USDT", "BONK/USDT",
     ]
 
     while True:
@@ -1750,7 +1748,7 @@ def instant_momentum_worker():
                     price = ticker["last"]
                     vol = ticker.get("quoteVolume", 0) or 0
 
-                    if price <= 0 or vol < 250_000:
+                    if price <= 0 or vol < 30_000:
                         continue
 
                     with positions_lock:
@@ -1763,12 +1761,12 @@ def instant_momentum_worker():
 
                     prev = last_prices[sym]
                     elapsed = time.time() - prev["ts"]
-                    if elapsed < 120:
+                    if elapsed < 90:
                         continue
 
                     change = (price - prev["price"]) / prev["price"] * 100
 
-                    if abs(change) >= 2.0 and vol > 500_000:
+                    if abs(change) >= 1.5 and vol > 50_000:
                         trend = get_trend_filter()
                         direction_ok = (change > 0 and trend != "down") or \
                                        (change < 0 and trend != "up")
@@ -1782,7 +1780,7 @@ def instant_momentum_worker():
                             continue
 
                         capital = get_trade_capital("spot") * 0.6
-                        if capital < 25:
+                        if capital < 6:
                             continue
 
                         trade_count += 1
@@ -2099,7 +2097,7 @@ def steady_climber_worker():
                     ticker = safe_fetch_ticker(sym)
                     price = ticker["last"]
                     vol = ticker.get("quoteVolume", 0) or 0
-                    if price <= 0 or vol < 750_000:
+                    if price <= 0 or vol < 75_000:
                         continue
 
                     if sym not in price_history:
@@ -2118,7 +2116,7 @@ def steady_climber_worker():
                     if change >= 3.5 and get_trend_filter() != "down":
                         if can_trade_symbol(sym):
                             capital = get_trade_capital("spot") * 0.45
-                            if capital > 35:
+                            if capital > 6:
                                 log(f"[STEADY] {sym} +{change:.2f}% in {hours:.1f}h -> ${capital:.2f}")
                                 spot_buy(sym, capital, "steady_climber")
                                 price_history[sym]["ts"] = now
@@ -2320,7 +2318,7 @@ def portfolio_manager_worker():
                         ticker = exchange.fetch_ticker(sym)
                         change = ticker.get("percentage", 0) or 0
                         vol = ticker.get("quoteVolume", 0) or 0
-                        if change > 3 and vol > 500_000:
+                        if change > 3 and vol > 50_000:
                             buy_amt = min(usdt_bal * 0.15, 50, usdt_bal - MIN_USDT_RESERVE)
                             if buy_amt >= 5:
                                 qty = buy_amt / ticker["last"]

@@ -1118,6 +1118,10 @@ CORE_PAIRS = [
     "ADA/USDT", "DOGE/USDT", "MATIC/USDT", "DOT/USDT", "AVAX/USDT",
     "LINK/USDT", "UNI/USDT", "ATOM/USDT", "LTC/USDT", "BCH/USDT",
     "SHIB/USDT", "PEPE/USDT", "FET/USDT", "INJ/USDT", "TIA/USDT",
+    "ARB/USDT", "OP/USDT", "SUI/USDT", "SEI/USDT", "APT/USDT",
+    "NEAR/USDT", "FIL/USDT", "RENDER/USDT", "WIF/USDT", "BONK/USDT",
+    "JUP/USDT", "ONDO/USDT", "CRO/USDT", "ALGO/USDT", "MANA/USDT",
+    "SAND/USDT", "GALA/USDT", "IMX/USDT", "GRT/USDT", "AAVE/USDT",
 ]
 SEEN_PAIRS = set()
 SEEN_PAIRS_FILE = "seen_new_listings.json"
@@ -1344,7 +1348,8 @@ def volume_surge_worker():
                 time.sleep(5)
                 continue
 
-            scan_pairs = HOT_PAIRS if HOT_PAIRS else CORE_PAIRS
+            scan_pairs = list(HOT_PAIRS if HOT_PAIRS else CORE_PAIRS)
+            random.shuffle(scan_pairs)
 
             for sym in scan_pairs:
                 try:
@@ -1402,8 +1407,10 @@ def breakout_worker():
                 time.sleep(5)
                 continue
 
-            markets = [s for s in (HOT_PAIRS or []) + CORE_PAIRS
-                       if s.endswith("/USDT")][:35]
+            markets = list(set(s for s in (HOT_PAIRS or []) + CORE_PAIRS
+                       if s.endswith("/USDT")))
+            random.shuffle(markets)
+            markets = markets[:40]
 
             for sym in markets:
                 try:
@@ -1542,7 +1549,9 @@ def scalper_worker():
                 open_count = len(scalp_positions)
 
             if usdt >= SCALP_CONFIG["MIN_USD"] * 1.3 and open_count < SCALP_CONFIG["MAX_OPEN"]:
-                scan_list = list(set(HOT_PAIRS + CORE_PAIRS))[:45]
+                scan_list = list(set(HOT_PAIRS + CORE_PAIRS))
+                random.shuffle(scan_list)
+                scan_list = scan_list[:50]
                 best = None
                 best_score = 0
 
@@ -1612,7 +1621,8 @@ def margin_long_worker():
                 time.sleep(5)
                 continue
 
-            scan_list = HOT_PAIRS if HOT_PAIRS else CORE_PAIRS
+            scan_list = list(HOT_PAIRS if HOT_PAIRS else CORE_PAIRS)
+            random.shuffle(scan_list)
             markets = [s for s in scan_list if s.endswith("/USDT")]
 
             trend = get_trend_filter()
@@ -1670,8 +1680,10 @@ def margin_short_worker():
                 time.sleep(5)
                 continue
 
-            scan_markets = [s for s in (HOT_PAIRS or []) + CORE_PAIRS
-                           if s.endswith("/USDT")][:28]
+            scan_markets = list(set(s for s in (HOT_PAIRS or []) + CORE_PAIRS
+                           if s.endswith("/USDT")))
+            random.shuffle(scan_markets)
+            scan_markets = scan_markets[:30]
 
             for sym in scan_markets:
                 try:
@@ -1742,7 +1754,9 @@ def instant_momentum_worker():
                 time.sleep(3)
                 continue
 
-            for sym in pairs:
+            shuffled = list(pairs)
+            random.shuffle(shuffled)
+            for sym in shuffled:
                 try:
                     ticker = safe_fetch_ticker(sym)
                     price = ticker["last"]
@@ -2088,8 +2102,10 @@ def steady_climber_worker():
                 time.sleep(5)
                 continue
 
-            scan = [s for s in (HOT_PAIRS or []) + CORE_PAIRS
-                    if s.endswith("/USDT")][:22]
+            scan = list(set(s for s in (HOT_PAIRS or []) + CORE_PAIRS
+                    if s.endswith("/USDT")))
+            random.shuffle(scan)
+            scan = scan[:30]
             now = time.time()
 
             for sym in scan:
@@ -2562,9 +2578,11 @@ def drip_sell_worker():
                             f"(~${total_value_usd:.2f}) in wallet {pubkey_str[:8]}... "
                             f"— selling in ${MAX_BATCH_USD:.2f} batches")
 
-                        # Drip sell loop
+                        # Drip sell loop — use THIS wallet's pubkey for Jupiter
                         remaining = raw_amount
                         batch_num = 0
+                        wallet_pubkey = pubkey_str
+                        session = dex.solana.session
 
                         while remaining > 0:
                             sell_amount = min(batch_amount, remaining)
@@ -2588,33 +2606,46 @@ def drip_sell_worker():
                                     log(f"[DRIP SELL] Slippage {price_impact*100:.1f}% too high "
                                         f"on batch #{batch_num} — waiting longer")
                                     time.sleep(DELAY_BETWEEN_SWAPS * 3)
-                                    # Try with half the batch
                                     sell_amount = max(1, sell_amount // 2)
                                     continue
 
                                 out_sol = int(quote["outAmount"]) / 1e9
                                 batch_usd = out_sol * sol_price
 
-                                # Build and send the swap
-                                tx_b64 = dex.solana.jupiter_swap_tx(
-                                    mint, SOL_MINT, sell_amount
+                                # Build swap TX using THIS wallet's pubkey
+                                swap_data = {
+                                    "quoteResponse": quote,
+                                    "userPublicKey": wallet_pubkey,
+                                    "wrapAndUnwrapSol": True,
+                                }
+                                r = session.post(
+                                    dex.solana._jupiter_swap_url,
+                                    json=swap_data, timeout=10
                                 )
+                                js = r.json()
+                                tx_b64 = js.get("swapTransaction")
+
                                 if not tx_b64:
-                                    log(f"[DRIP SELL] Swap TX build failed batch #{batch_num}")
+                                    log(f"[DRIP SELL] Swap TX build failed batch #{batch_num}: {js}")
                                     break
 
-                                txid = sol_wallet.send_raw_tx(tx_b64)
+                                # SIGN and send with this wallet's keypair
+                                txid = sol_wallet.sign_and_send_jupiter_tx(tx_b64)
 
-                                if txid and not isinstance(txid, dict):
+                                if txid and isinstance(txid, str):
                                     human_sold = sell_amount / (10 ** decimals)
                                     remaining -= sell_amount
                                     total_sold_usd += batch_usd
                                     pct_done = ((raw_amount - remaining) / raw_amount) * 100
                                     log(f"[DRIP SELL] Batch #{batch_num}: sold {human_sold:.2f} "
                                         f"-> {out_sol:.4f} SOL (~${batch_usd:.2f}) "
-                                        f"| {pct_done:.0f}% done | tx: {str(txid)[:16]}...")
+                                        f"| {pct_done:.0f}% done | tx: {txid[:16]}...")
                                 else:
-                                    error_msg = txid.get("error", {}).get("message", str(txid)) if isinstance(txid, dict) else "unknown"
+                                    error_msg = ""
+                                    if isinstance(txid, dict):
+                                        error_msg = txid.get("error", {}).get("message", str(txid))
+                                    else:
+                                        error_msg = str(txid)
                                     log(f"[DRIP SELL] TX failed batch #{batch_num}: {error_msg}")
                                     time.sleep(DELAY_BETWEEN_SWAPS)
                                     continue

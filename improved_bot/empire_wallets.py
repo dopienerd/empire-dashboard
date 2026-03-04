@@ -15,6 +15,10 @@ from eth_account import Account
 # Solana
 from solders.keypair import Keypair as SolanaKeypair
 from solders.pubkey import Pubkey as SolanaPubkey
+try:
+    from solders.transaction import VersionedTransaction
+except ImportError:
+    VersionedTransaction = None
 
 
 @dataclass
@@ -101,6 +105,33 @@ class SolanaWallet:
             return res.get("result") or res
         except Exception as e:
             print(f"[SOL] send_raw_tx error: {e}")
+            return None
+
+    def sign_and_send_jupiter_tx(self, swap_tx_b64: str):
+        """Sign a Jupiter versioned transaction and send it."""
+        if not self.keypair:
+            print("[SOL] No keypair — cannot sign")
+            return None
+        try:
+            raw = base64.b64decode(swap_tx_b64)
+            tx = VersionedTransaction.from_bytes(raw)
+
+            # Create a new signed transaction
+            signed_tx = VersionedTransaction(tx.message, [self.keypair])
+
+            signed_b64 = base64.b64encode(bytes(signed_tx)).decode()
+            res = self.client.post(self.rpc_url, json={
+                "jsonrpc": "2.0", "id": 1,
+                "method": "sendTransaction",
+                "params": [signed_b64, {
+                    "encoding": "base64",
+                    "skipPreflight": True,
+                    "maxRetries": 3,
+                }]
+            }, timeout=20).json()
+            return res.get("result") or res
+        except Exception as e:
+            print(f"[SOL] sign_and_send error: {e}")
             return None
 
 

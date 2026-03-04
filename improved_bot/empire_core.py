@@ -2467,6 +2467,184 @@ def emergency_liquidate_all():
 
 
 # =========================================================================
+# DRIP SELL — Liquidate low-liquidity SPL tokens in tiny batches
+# =========================================================================
+def drip_sell_worker():
+    """
+    Scans all Solana wallets for SPL token holdings and drip-sells them
+    to SOL via Jupiter in small batches to avoid slippage.
+    Runs continuously — checks every 2 minutes for tokens to sell.
+    """
+    log("[DRIP SELL] SPL token liquidator starting...")
+    time.sleep(15)  # Let everything else initialize first
+
+    SOL_MINT = "So11111111111111111111111111111111111111112"
+    TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+    # Configurable per-batch settings
+    MAX_BATCH_USD = 1.50          # Max ~$1.50 per swap to keep slippage low
+    DELAY_BETWEEN_SWAPS = 15      # Seconds between swaps (let pool recover)
+    MIN_TOKEN_VALUE_USD = 0.10    # Skip tokens worth less than 10 cents total
+    MAX_SLIPPAGE_BPS = 1500       # 15% max slippage — skip if worse
+
+    while True:
+        try:
+            if not wallets or not dex or not dex.solana:
+                time.sleep(60)
+                continue
+
+            sol_price = dex.get_sol_price()
+            total_sold_usd = 0
+
+            for sol_wallet in wallets.solana.wallets:
+                if not sol_wallet.pubkey:
+                    continue
+
+                pubkey_str = str(sol_wallet.pubkey)
+
+                # Query all SPL token accounts for this wallet
+                try:
+                    res = sol_wallet.client.post(sol_wallet.rpc_url, json={
+                        "jsonrpc": "2.0", "id": 1,
+                        "method": "getTokenAccountsByOwner",
+                        "params": [
+                            pubkey_str,
+                            {"programId": TOKEN_PROGRAM},
+                            {"encoding": "jsonParsed"}
+                        ]
+                    }, timeout=15).json()
+
+                    accounts = res.get("result", {}).get("value", [])
+                except Exception as e:
+                    log(f"[DRIP SELL] RPC error scanning {pubkey_str[:8]}: {e}")
+                    continue
+
+                for acct in accounts:
+                    try:
+                        info = acct["account"]["data"]["parsed"]["info"]
+                        mint = info["mint"]
+                        raw_amount = int(info["tokenAmount"]["amount"])
+                        decimals = info["tokenAmount"]["decimals"]
+                        ui_amount = raw_amount / (10 ** decimals) if decimals > 0 else raw_amount
+
+                        # Skip native SOL wrapper and empty balances
+                        if mint == SOL_MINT or raw_amount <= 0:
+                            continue
+
+                        # Get a quote for the FULL amount to estimate USD value
+                        try:
+                            full_quote = dex.solana.get_jupiter_quote(
+                                input_mint=mint,
+                                output_mint=SOL_MINT,
+                                amount=raw_amount,
+                            )
+                            if "error" in full_quote or "outAmount" not in full_quote:
+                                continue
+
+                            out_lamports = int(full_quote["outAmount"])
+                            total_value_usd = (out_lamports / 1e9) * sol_price
+
+                            if total_value_usd < MIN_TOKEN_VALUE_USD:
+                                continue
+
+                        except Exception:
+                            continue
+
+                        # Calculate batch size in raw token units
+                        # If $45 total and we want $1.50 per batch, that's ~3.3% per batch
+                        if total_value_usd <= MAX_BATCH_USD:
+                            batch_amount = raw_amount  # Sell it all in one go
+                        else:
+                            batch_fraction = MAX_BATCH_USD / total_value_usd
+                            batch_amount = max(1, int(raw_amount * batch_fraction))
+
+                        log(f"[DRIP SELL] Found {ui_amount:.2f} tokens of {mint[:8]}... "
+                            f"(~${total_value_usd:.2f}) in wallet {pubkey_str[:8]}... "
+                            f"— selling in ${MAX_BATCH_USD:.2f} batches")
+
+                        # Drip sell loop
+                        remaining = raw_amount
+                        batch_num = 0
+
+                        while remaining > 0:
+                            sell_amount = min(batch_amount, remaining)
+                            batch_num += 1
+
+                            try:
+                                # Get quote for this batch
+                                quote = dex.solana.get_jupiter_quote(
+                                    input_mint=mint,
+                                    output_mint=SOL_MINT,
+                                    amount=sell_amount,
+                                )
+
+                                if "error" in quote or "outAmount" not in quote:
+                                    log(f"[DRIP SELL] No route for batch #{batch_num} — skipping")
+                                    break
+
+                                # Check slippage
+                                price_impact = float(quote.get("priceImpactPct", "0") or "0")
+                                if abs(price_impact) * 100 > MAX_SLIPPAGE_BPS / 100:
+                                    log(f"[DRIP SELL] Slippage {price_impact*100:.1f}% too high "
+                                        f"on batch #{batch_num} — waiting longer")
+                                    time.sleep(DELAY_BETWEEN_SWAPS * 3)
+                                    # Try with half the batch
+                                    sell_amount = max(1, sell_amount // 2)
+                                    continue
+
+                                out_sol = int(quote["outAmount"]) / 1e9
+                                batch_usd = out_sol * sol_price
+
+                                # Build and send the swap
+                                tx_b64 = dex.solana.jupiter_swap_tx(
+                                    mint, SOL_MINT, sell_amount
+                                )
+                                if not tx_b64:
+                                    log(f"[DRIP SELL] Swap TX build failed batch #{batch_num}")
+                                    break
+
+                                txid = sol_wallet.send_raw_tx(tx_b64)
+
+                                if txid and not isinstance(txid, dict):
+                                    human_sold = sell_amount / (10 ** decimals)
+                                    remaining -= sell_amount
+                                    total_sold_usd += batch_usd
+                                    pct_done = ((raw_amount - remaining) / raw_amount) * 100
+                                    log(f"[DRIP SELL] Batch #{batch_num}: sold {human_sold:.2f} "
+                                        f"-> {out_sol:.4f} SOL (~${batch_usd:.2f}) "
+                                        f"| {pct_done:.0f}% done | tx: {str(txid)[:16]}...")
+                                else:
+                                    error_msg = txid.get("error", {}).get("message", str(txid)) if isinstance(txid, dict) else "unknown"
+                                    log(f"[DRIP SELL] TX failed batch #{batch_num}: {error_msg}")
+                                    time.sleep(DELAY_BETWEEN_SWAPS)
+                                    continue
+
+                            except Exception as e:
+                                log(f"[DRIP SELL] Batch #{batch_num} error: {e}")
+                                time.sleep(DELAY_BETWEEN_SWAPS)
+                                continue
+
+                            # Wait for pool to recover before next batch
+                            time.sleep(DELAY_BETWEEN_SWAPS)
+
+                        if batch_num > 0:
+                            log(f"[DRIP SELL] Finished {mint[:8]}... — "
+                                f"{batch_num} batches, ~${total_sold_usd:.2f} recovered")
+
+                    except Exception as e:
+                        continue
+
+            # Wait before scanning again
+            if total_sold_usd > 0:
+                log(f"[DRIP SELL] Cycle complete — ${total_sold_usd:.2f} total recovered to SOL")
+            time.sleep(120)  # Re-scan every 2 minutes
+
+        except Exception as e:
+            log(f"[DRIP SELL ERROR] {e}")
+            time.sleep(60)
+
+
+# =========================================================================
 # SYNC POSITIONS WITH EXCHANGE
 # =========================================================================
 def sync_positions_with_exchange():
@@ -2543,6 +2721,9 @@ def start_empire():
 
         # Monitoring
         log_position_ages,
+
+        # SPL token liquidator
+        drip_sell_worker,
 
         # Perps
         perps_trading_worker,

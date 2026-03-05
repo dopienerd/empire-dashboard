@@ -134,6 +134,49 @@ class SolanaWallet:
             print(f"[SOL] sign_and_send error: {e}")
             return None
 
+    def transfer_sol(self, to_pubkey_str: str, lamports: int):
+        """Transfer SOL to another Solana address."""
+        if not self.keypair:
+            print("[SOL] No keypair -- cannot transfer")
+            return None
+        try:
+            from solders.system_program import TransferParams, transfer as sol_transfer
+            from solders.transaction import Transaction as LegacyTransaction
+            from solders.message import Message
+            from solders.hash import Hash as SolanaHash
+
+            to_pubkey = SolanaPubkey.from_string(to_pubkey_str)
+            ix = sol_transfer(TransferParams(
+                from_pubkey=self.keypair.pubkey(),
+                to_pubkey=to_pubkey,
+                lamports=lamports,
+            ))
+
+            # Get recent blockhash
+            res = self.client.post(self.rpc_url, json={
+                "jsonrpc": "2.0", "id": 1,
+                "method": "getLatestBlockhash",
+                "params": [{"commitment": "finalized"}]
+            }, timeout=10).json()
+            blockhash_str = res["result"]["value"]["blockhash"]
+            blockhash = SolanaHash.from_string(blockhash_str)
+
+            msg = Message.new_with_blockhash([ix], self.keypair.pubkey(), blockhash)
+            tx = LegacyTransaction.new_unsigned(msg)
+            tx.sign([self.keypair], blockhash)
+
+            raw_bytes = bytes(tx)
+            b64 = base64.b64encode(raw_bytes).decode()
+            res = self.client.post(self.rpc_url, json={
+                "jsonrpc": "2.0", "id": 1,
+                "method": "sendTransaction",
+                "params": [b64, {"encoding": "base64", "skipPreflight": True}]
+            }, timeout=15).json()
+            return res.get("result") or res
+        except Exception as e:
+            print(f"[SOL] transfer_sol error: {e}")
+            return None
+
 
 # ================= EVM WALLET =================
 class EVMWallet:
@@ -244,6 +287,60 @@ class MultiSolana:
             except Exception:
                 pass
         return total
+
+    def consolidate_sol(self, min_keep_lamports: int = 10_000_000):
+        """
+        Move SOL from all wallets to the wallet with the highest balance.
+        Keeps min_keep_lamports (0.01 SOL) in each source wallet for rent.
+        Returns total lamports transferred.
+        """
+        if len(self.wallets) < 2:
+            return 0
+
+        # Find wallet with the most SOL
+        best_wallet = None
+        best_balance = 0.0
+        balances = []
+        for w in self.wallets:
+            if not w.pubkey:
+                continue
+            bal = w.get_balance()
+            balances.append((w, bal))
+            if bal > best_balance:
+                best_balance = bal
+                best_wallet = w
+
+        if not best_wallet or not best_wallet.pubkey:
+            return 0
+
+        target_pubkey = str(best_wallet.pubkey)
+        total_transferred = 0
+
+        for w, bal in balances:
+            if w is best_wallet:
+                continue
+            if not w.keypair:
+                continue
+
+            available_lamports = int(bal * 1_000_000_000) - min_keep_lamports
+            # Only transfer if > 0.02 SOL available (to justify tx fee)
+            if available_lamports < 20_000_000:
+                continue
+
+            # Subtract 5000 lamports for transaction fee
+            send_lamports = available_lamports - 5000
+            if send_lamports <= 0:
+                continue
+
+            result = w.transfer_sol(target_pubkey, send_lamports)
+            if result and isinstance(result, str):
+                total_transferred += send_lamports
+                print(f"[CONSOLIDATE] Moved {send_lamports / 1e9:.5f} SOL "
+                      f"from {str(w.pubkey)[:8]}... to {target_pubkey[:8]}...")
+            import time
+            time.sleep(2)  # Wait between transfers
+
+        return total_transferred
 
 
 # ================= MASTER CLASS =================

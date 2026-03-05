@@ -249,18 +249,107 @@ class EmpireHandler(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"[DASHBOARD] Solana error: {e}")
 
-        # EVM
+        # Solana SPL tokens
+        try:
+            TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            for i, w in enumerate(wallets.solana.wallets):
+                if not w.pubkey:
+                    continue
+                try:
+                    res = w.client.post(w.rpc_url, json={
+                        "jsonrpc": "2.0", "id": 1,
+                        "method": "getTokenAccountsByOwner",
+                        "params": [
+                            str(w.pubkey),
+                            {"programId": TOKEN_PROGRAM},
+                            {"encoding": "jsonParsed"}
+                        ]
+                    }, timeout=10).json()
+                    accounts = res.get("result", {}).get("value", [])
+                    tokens = []
+                    for acct in accounts:
+                        info = acct["account"]["data"]["parsed"]["info"]
+                        amt = float(info["tokenAmount"]["uiAmountString"] or "0")
+                        if amt > 0:
+                            tokens.append({
+                                "mint": info["mint"][:12] + "...",
+                                "amount": round(amt, 4),
+                            })
+                    if tokens and i < len(data["solana"]):
+                        data["solana"][i]["spl_tokens"] = tokens
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # EVM — live prices from exchange
         try:
             for chain, wallet in wallets.evm.wallets.items():
                 bal_val = wallet.get_balance()
-                # Use rough native prices
-                prices = {"ETH": 3400, "BASE": 3400, "ARB": 3400,
-                          "OP": 3400, "AVAX": 48, "CRO": 0.13}
-                usd = bal_val * prices.get(chain, 1)
+                usd = 0.0
+                try:
+                    if chain in ["ETH", "BASE", "ARB", "OP"]:
+                        eth_price = exchange.fetch_ticker("ETH/USDT")["last"]
+                        usd = bal_val * eth_price
+                    elif chain == "AVAX":
+                        avax_price = exchange.fetch_ticker("AVAX/USDT")["last"]
+                        usd = bal_val * avax_price
+                    elif chain == "CRO":
+                        cro_price = exchange.fetch_ticker("CRO/USDT")["last"]
+                        usd = bal_val * cro_price
+                except Exception:
+                    prices = {"ETH": 3400, "BASE": 3400, "ARB": 3400,
+                              "OP": 3400, "AVAX": 48, "CRO": 0.13}
+                    usd = bal_val * prices.get(chain, 1)
                 data["evm"][chain] = {"balance": round(bal_val, 6), "usd": round(usd, 2)}
                 data["total_usd"] += usd
         except Exception as e:
             print(f"[DASHBOARD] EVM error: {e}")
+
+        # Stats from CORE
+        try:
+            snapshot = CORE.dashboard_snapshot()
+            data["stats"] = {
+                "total_trades": snapshot.get("total_trades", 0),
+                "total_pnl_usd": round(snapshot.get("total_pnl_usd", 0), 2),
+                "total_fees_usd": round(snapshot.get("total_fees_usd", 0), 2),
+                "wins": snapshot.get("wins", 0),
+                "losses": snapshot.get("losses", 0),
+                "best_trade": snapshot.get("best_trade"),
+                "worst_trade": snapshot.get("worst_trade"),
+                "last_trade": snapshot.get("last_trade"),
+                "trend": snapshot.get("trend", "neutral"),
+            }
+            data["open_positions"] = snapshot.get("positions", {})
+            data["futures_positions"] = snapshot.get("futures_positions", {})
+            data["scalp_positions"] = snapshot.get("scalp_positions", {})
+        except Exception as e:
+            data["stats"] = {}
+            print(f"[DASHBOARD] Snapshot error: {e}")
+
+        # Last 5 trades from DB
+        try:
+            import sqlite3
+            conn = sqlite3.connect("empire_trades.db")
+            cur = conn.execute(
+                "SELECT ts, action, symbol, amount, price, pnl_pct, "
+                "fee_usd, pnl_net_usd, strategy, notes "
+                "FROM trades ORDER BY id DESC LIMIT 5"
+            )
+            rows = cur.fetchall()
+            conn.close()
+            data["recent_trades"] = [
+                {
+                    "time": r[0], "action": r[1], "symbol": r[2],
+                    "amount": r[3], "price": r[4], "pnl_pct": r[5],
+                    "fee_usd": r[6] or 0, "pnl_net_usd": r[7] or 0,
+                    "strategy": r[8], "notes": r[9],
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            data["recent_trades"] = []
+            print(f"[DASHBOARD] Trades query error: {e}")
 
         data["total_usd"] = round(data["total_usd"], 2)
 

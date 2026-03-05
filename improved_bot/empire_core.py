@@ -130,6 +130,7 @@ _dashboard_state = {
     "started_at": datetime.now().isoformat(),
     "total_trades": 0,
     "total_pnl_usd": 0.0,
+    "total_fees_usd": 0.0,
     "wins": 0,
     "losses": 0,
     "best_trade": None,
@@ -159,11 +160,12 @@ def dashboard_snapshot() -> dict:
     }
 
 
-def record_trade_result(symbol, pnl_usd, pnl_pct, side="buy"):
+def record_trade_result(symbol, pnl_usd, pnl_pct, side="buy", fee_usd=0.0):
     """Update dashboard stats after a trade."""
     with stats_lock:
         _dashboard_state["total_trades"] += 1
         _dashboard_state["total_pnl_usd"] += pnl_usd
+        _dashboard_state["total_fees_usd"] += fee_usd
         if pnl_usd >= 0:
             _dashboard_state["wins"] += 1
         else:
@@ -200,6 +202,11 @@ MAX_TRADE_SIZE_USD = 5000
 MIN_24H_VOLUME = 50_000
 WORKER_CAPITAL_FRACTION = 0.60
 TRADE_SIZE_FRACTION = 0.70
+
+# --- EXCHANGE FEE CONSTANTS ---
+EXCHANGE_FEE_PCT = 0.10       # Crypto.com taker fee per side (0.1%)
+ROUND_TRIP_FEE_PCT = 0.20     # Buy + sell combined fees
+MIN_PROFITABLE_SPREAD = 0.25  # Minimum spread to overcome fees + slippage
 
 # --- Position dicts (protected by locks above) ---
 positions = {}
@@ -272,6 +279,29 @@ def get_kelly_fraction(strategy: str) -> float:
         kelly = win_rate - (1 - win_rate) / b
         half_kelly = kelly / 2
         return max(0.05, min(0.5, half_kelly))
+
+
+def calculate_pnl_after_fees(entry_price: float, exit_price: float,
+                              qty: float, direction: str = "long") -> tuple:
+    """
+    Calculate PnL after exchange fees.
+    Returns (pnl_pct, pnl_usd, fee_usd).
+    direction: 'long' or 'short'
+    """
+    if entry_price <= 0:
+        return 0.0, 0.0, 0.0
+
+    if direction == "short":
+        raw_pnl_pct = (entry_price - exit_price) / entry_price * 100
+    else:
+        raw_pnl_pct = (exit_price - entry_price) / entry_price * 100
+
+    pnl_pct = raw_pnl_pct - ROUND_TRIP_FEE_PCT
+    trade_value = qty * exit_price
+    fee_usd = trade_value * ROUND_TRIP_FEE_PCT / 100
+    pnl_usd = pnl_pct / 100 * trade_value
+
+    return round(pnl_pct, 4), round(pnl_usd, 4), round(fee_usd, 4)
 
 
 # =========================================================================
@@ -455,6 +485,25 @@ def _init_db():
 _init_db()
 
 
+def _migrate_db():
+    with db_lock:
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.execute("PRAGMA table_info(trades)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if "fee_usd" not in columns:
+                conn.execute("ALTER TABLE trades ADD COLUMN fee_usd REAL DEFAULT 0.0")
+            if "pnl_net_usd" not in columns:
+                conn.execute("ALTER TABLE trades ADD COLUMN pnl_net_usd REAL DEFAULT 0.0")
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[DB] migration: {e}")
+
+
+_migrate_db()
+
+
 def log_trade(
     action: str,
     symbol: str,
@@ -464,14 +513,16 @@ def log_trade(
     pos_type: str = "spot",
     strategy: str = "",
     notes: str = "",
+    fee_usd: float = 0.0,
+    pnl_net_usd: float = 0.0,
 ):
     """Insert a trade record into the DB."""
     with db_lock:
         try:
             conn = sqlite3.connect(DB_FILE)
             conn.execute(
-                "INSERT INTO trades (ts, action, symbol, amount, price, pnl_pct, pos_type, strategy, notes) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO trades (ts, action, symbol, amount, price, pnl_pct, pos_type, strategy, notes, fee_usd, pnl_net_usd) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     datetime.now().isoformat(),
                     action,
@@ -482,6 +533,8 @@ def log_trade(
                     pos_type,
                     strategy,
                     notes,
+                    fee_usd,
+                    pnl_net_usd,
                 ),
             )
             conn.commit()
@@ -718,12 +771,12 @@ def spot_sell(symbol: str, reason: str = "take_profit", fraction: float = 1.0) -
         # Calculate PnL
         pnl_pct = 0.0
         pnl_usd = 0.0
+        fee_usd = 0.0
         with positions_lock:
             pos = positions.get(symbol, {})
             entry = pos.get("entry", filled_price)
             if entry > 0:
-                pnl_pct = (filled_price - entry) / entry * 100
-                pnl_usd = pnl_pct / 100 * sell_qty * filled_price
+                pnl_pct, pnl_usd, fee_usd = calculate_pnl_after_fees(entry, filled_price, sell_qty, "long")
 
             if fraction >= 1.0:
                 positions.pop(symbol, None)
@@ -732,7 +785,7 @@ def spot_sell(symbol: str, reason: str = "take_profit", fraction: float = 1.0) -
                     positions[symbol]["qty"] = positions[symbol].get("qty", 0) - sell_qty
 
         recently_sold[symbol] = time.time()
-        record_trade_result(symbol, pnl_usd, pnl_pct)
+        record_trade_result(symbol, pnl_usd, pnl_pct, fee_usd=fee_usd)
 
         strategy = pos.get("strategy", "unknown") if pos else "unknown"
         update_strategy_stats(strategy, pnl_usd)
@@ -740,7 +793,7 @@ def spot_sell(symbol: str, reason: str = "take_profit", fraction: float = 1.0) -
         msg = f"[SPOT SELL] {symbol} @ ${filled_price:.6f} qty={sell_qty:.4f} PnL={pnl_pct:+.2f}% [${pnl_usd:+.2f}] reason={reason}"
         print(msg)
         log(msg)
-        log_trade("SELL", symbol, sell_qty, filled_price, pnl_pct, "spot", strategy, reason)
+        log_trade("SELL", symbol, sell_qty, filled_price, pnl_pct, "spot", strategy, reason, fee_usd=fee_usd, pnl_net_usd=pnl_usd)
         return True
 
     except Exception as e:
@@ -866,27 +919,26 @@ def margin_close(symbol: str, reason: str = "take_profit") -> bool:
         if pos_type == "margin_short":
             # Close short by buying
             order = ex.create_market_buy_order(symbol, qty, {"marginMode": "cross"})
-            pnl_pct = (entry - price) / entry * 100 if entry > 0 else 0
         else:
             # Close long by selling
             order = ex.create_market_sell_order(symbol, qty, {"marginMode": "cross"})
-            pnl_pct = (price - entry) / entry * 100 if entry > 0 else 0
 
         filled_price = order.get("average", price)
-        pnl_usd = pnl_pct / 100 * qty * filled_price
+        direction = "short" if pos_type == "margin_short" else "long"
+        pnl_pct, pnl_usd, fee_usd = calculate_pnl_after_fees(entry, filled_price, qty, direction)
 
         with positions_lock:
             positions.pop(symbol, None)
 
         recently_sold[symbol] = time.time()
-        record_trade_result(symbol, pnl_usd, pnl_pct)
+        record_trade_result(symbol, pnl_usd, pnl_pct, fee_usd=fee_usd)
         strategy = pos.get("strategy", "margin")
         update_strategy_stats(strategy, pnl_usd)
 
         msg = f"[MARGIN CLOSE] {symbol} PnL={pnl_pct:+.2f}% [${pnl_usd:+.2f}] reason={reason}"
         print(msg)
         log(msg)
-        log_trade("MARGIN_CLOSE", symbol, qty, filled_price, pnl_pct, pos_type, strategy, reason)
+        log_trade("MARGIN_CLOSE", symbol, qty, filled_price, pnl_pct, pos_type, strategy, reason, fee_usd=fee_usd, pnl_net_usd=pnl_usd)
         return True
 
     except Exception as e:
@@ -1056,12 +1108,9 @@ def stop_loss_worker():
                     if price <= 0:
                         continue
                     entry = pos.get("entry", price)
-                    pnl_pct = (price - entry) / entry * 100
                     pos_type = pos.get("type", "spot")
-
-                    # Margin/short positions: invert PnL
-                    if pos_type == "margin_short":
-                        pnl_pct = -pnl_pct
+                    direction = "short" if "margin" in pos_type else "long"
+                    pnl_pct, _, _ = calculate_pnl_after_fees(entry, price, 1.0, direction)
 
                     threshold = -5.0 if "margin" in pos_type else -3.0
 
@@ -1499,7 +1548,7 @@ def scalper_worker():
                     ticker = safe_fetch_ticker(sym)
                     price = ticker["last"]
                     entry = pos["entry"]
-                    pnl_pct = (price - entry) / entry * 100
+                    pnl_pct, _, _ = calculate_pnl_after_fees(entry, price, 1.0, "long")
                     hold_sec = time.time() - pos["ts"]
                     peak = max(pos.get("peak", price), price)
                     peak_pnl = (peak - entry) / entry * 100
@@ -2027,7 +2076,7 @@ def orderbook_scalper_worker():
                             continue
                         ticker = safe_fetch_ticker(sym)
                         price = ticker["last"]
-                        pnl_pct = (price - pos["entry"]) / pos["entry"] * 100
+                        pnl_pct, _, _ = calculate_pnl_after_fees(pos["entry"], price, 1.0, "long")
                         age = time.time() - pos["ts"]
 
                         if pnl_pct >= 0.4 or pnl_pct <= -0.4 or age > 90:
@@ -2050,7 +2099,7 @@ def orderbook_scalper_worker():
                     ask_size = float(ob["asks"][0][1])
 
                     spread = (best_ask - best_bid) / best_bid * 100
-                    if not (0 < spread < 0.08):
+                    if not (MIN_PROFITABLE_SPREAD < spread < 1.0):
                         continue
 
                     if bid_size * best_bid < 5000 or ask_size * best_ask < 5000:
@@ -2175,7 +2224,7 @@ def aggressive_profit_taker():
 
                     entry = pos.get("entry", price)
                     age_min = (now - pos.get("time", now)) / 60
-                    pnl_pct = (price - entry) / entry * 100
+                    pnl_pct, _, _ = calculate_pnl_after_fees(entry, price, 1.0, "long")
 
                     # Age-based thresholds
                     if age_min < 15:
@@ -2242,7 +2291,7 @@ def stale_position_cleaner():
                         continue
 
                     entry = pos.get("entry", price)
-                    pnl_pct = (price - entry) / entry * 100
+                    pnl_pct, _, _ = calculate_pnl_after_fees(entry, price, 1.0, "long")
 
                     # Keep profitable positions
                     if pnl_pct >= 2.0:
@@ -2483,6 +2532,31 @@ def emergency_liquidate_all():
 
 
 # =========================================================================
+# SOL CONSOLIDATION — Move scattered SOL to primary wallet
+# =========================================================================
+def consolidate_sol_worker():
+    """Periodically consolidate SOL from all wallets into the primary wallet."""
+    log("[CONSOLIDATE] SOL consolidation worker starting")
+    time.sleep(30)
+
+    while True:
+        try:
+            if not wallets or not wallets.solana:
+                time.sleep(300)
+                continue
+
+            transferred = wallets.solana.consolidate_sol()
+            if transferred > 0:
+                sol_amount = transferred / 1_000_000_000
+                log(f"[CONSOLIDATE] Moved {sol_amount:.5f} SOL to primary wallet")
+
+            time.sleep(600)  # Check every 10 minutes
+        except Exception as e:
+            log(f"[CONSOLIDATE ERROR] {e}")
+            time.sleep(300)
+
+
+# =========================================================================
 # DRIP SELL — Liquidate low-liquidity SPL tokens in tiny batches
 # =========================================================================
 def drip_sell_worker():
@@ -2719,6 +2793,7 @@ def sync_positions_with_exchange():
 def start_empire():
     """Launch all worker threads with auto-restart wrapping."""
     _init_db()
+    _migrate_db()
 
     workers = [
         # Core scanners
@@ -2753,8 +2828,9 @@ def start_empire():
         # Monitoring
         log_position_ages,
 
-        # SPL token liquidator
+        # SPL token liquidator + SOL consolidation
         drip_sell_worker,
+        consolidate_sol_worker,
 
         # Perps
         perps_trading_worker,

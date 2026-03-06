@@ -193,6 +193,22 @@ class EmpireHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        # Serve the visual dashboard at root
+        if self.path == "/" or self.path == "/dashboard":
+            try:
+                dash_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+                with open(dash_path, "r", encoding="utf-8") as f:
+                    html = f.read()
+                self.send_response(200)
+                self.send_header("Content-type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(html.encode("utf-8"))
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(f"Dashboard error: {e}".encode())
+            return
+
         if self.path != "/empire_status":
             self.send_response(404)
             self.end_headers()

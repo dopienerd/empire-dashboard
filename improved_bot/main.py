@@ -19,6 +19,10 @@ import json
 import ccxt
 
 import empire_core as CORE
+try:
+    import empire_ai as AI
+except ImportError:
+    AI = None
 import empire_dex as DEX_MODULE
 import empire_wallets as WALLET_MODULE
 
@@ -342,6 +346,16 @@ class EmpireHandler(BaseHTTPRequestHandler):
         except Exception as e:
             data["stats"] = {}
             print(f"[DASHBOARD] Snapshot error: {e}")
+
+        # AI Signal Data
+        try:
+            if AI and exchange:
+                open_syms = list(data.get("open_positions", {}).keys())
+                data["ai"] = AI.get_dashboard_ai_data(exchange, open_syms)
+            else:
+                data["ai"] = None
+        except Exception:
+            data["ai"] = None
 
         # Last 5 trades from DB
         try:

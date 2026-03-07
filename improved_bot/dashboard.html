@@ -275,6 +275,7 @@
 </div>
 
 <div class="stats-row" id="statsRow"></div>
+<div class="stats-row" id="aiBar" style="display:none"></div>
 
 <div class="two-col">
   <div>
@@ -355,6 +356,33 @@ function renderStats(data) {
     }
   });
   $('statsRow').innerHTML = html;
+}
+
+function renderAI(ai) {
+  if (!ai) { $('aiBar').style.display = 'none'; return; }
+  $('aiBar').style.display = '';
+  let html = '';
+  if (ai.fear_greed) {
+    const fg = ai.fear_greed;
+    const fgColor = fg.value < 30 ? '#ef4444' : fg.value < 50 ? '#f59e0b' : fg.value < 70 ? '#22c55e' : '#ef4444';
+    html += '<div class="stat-card"><div class="label">Fear & Greed</div>';
+    html += '<div class="value" style="color:' + fgColor + '">' + fg.value + '</div>';
+    html += '<div style="font-size:11px;color:#8892a4">' + fg.label + '</div></div>';
+  }
+  if (ai.trending && ai.trending.length > 0) {
+    html += '<div class="stat-card" style="grid-column: span 2"><div class="label">\u{1F525} Trending</div>';
+    html += '<div style="font-size:13px;color:#60a5fa">' + ai.trending.map(t => t.symbol).join(', ') + '</div></div>';
+  }
+  if (ai.scores && Object.keys(ai.scores).length > 0) {
+    html += '<div class="stat-card" style="grid-column: span 3"><div class="label">AI Scores</div><div style="font-size:12px;display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">';
+    Object.entries(ai.scores).forEach(([sym, s]) => {
+      const color = s.score >= 70 ? '#22c55e' : s.score >= 55 ? '#60a5fa' : s.score >= 45 ? '#8892a4' : '#ef4444';
+      const short = sym.replace('/USDT', '');
+      html += '<span style="color:' + color + '">' + short + ': ' + s.score + '</span>';
+    });
+    html += '</div></div>';
+  }
+  $('aiBar').innerHTML = html;
 }
 
 function renderCex(cex) {
@@ -509,6 +537,7 @@ async function fetchData() {
     $('totalUsd').textContent = fmt(data.total_usd);
 
     renderStats(data);
+    renderAI(data.ai);
     renderCex(data.cex);
     renderSolana(data.solana);
     renderEvm(data.evm);

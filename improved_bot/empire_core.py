@@ -44,6 +44,13 @@ except ImportError:
 # requests for HTTP calls
 import requests
 
+# AI Signal Engine
+try:
+    import empire_ai as AI
+except ImportError:
+    AI = None
+    print("[WARN] empire_ai not found — running without AI signals")
+
 # =========================================================================
 # 2. THREAD SAFETY — LOCKS
 # =========================================================================
@@ -149,7 +156,7 @@ def dashboard_snapshot() -> dict:
         scalp_copy = dict(scalp_positions)
     with stats_lock:
         stats_copy = dict(_dashboard_state)
-    return {
+    result = {
         **stats_copy,
         "positions": pos_copy,
         "futures_positions": fut_copy,
@@ -158,6 +165,16 @@ def dashboard_snapshot() -> dict:
         "trend": get_trend_filter(),
         "hot_chain": hot_chain,
     }
+
+    # Add AI data if available
+    if AI and exchange:
+        try:
+            symbols = list(pos_copy.keys())[:15]
+            result["ai_data"] = AI.get_dashboard_ai_data(exchange, symbols)
+        except Exception:
+            result["ai_data"] = None
+
+    return result
 
 
 def record_trade_result(symbol, pnl_usd, pnl_pct, side="buy", fee_usd=0.0):
@@ -437,7 +454,7 @@ def get_free_usdt() -> float:
         return 0.0
 
 
-def get_trade_capital(strategy: str = "default") -> float:
+def get_trade_capital(strategy: str = "default", symbol: str = None) -> float:
     """
     Compute how much USD to use for a single trade.
     Uses Kelly fraction scaled by WORKER_CAPITAL_FRACTION and TRADE_SIZE_FRACTION.
@@ -447,6 +464,20 @@ def get_trade_capital(strategy: str = "default") -> float:
         free = get_free_usdt()
         kelly = get_kelly_fraction(strategy)
         raw = free * WORKER_CAPITAL_FRACTION * TRADE_SIZE_FRACTION * kelly
+
+        # AI confidence scaling
+        ai_multiplier = 1.0
+        if AI and exchange and symbol:
+            try:
+                ai = AI.get_ai_score(exchange, symbol)
+                ai_multiplier = ai["score"] / 100.0
+                ai_multiplier = max(0.3, min(1.5, ai_multiplier))
+                fg_mult = AI.get_fear_greed_multiplier()
+                ai_multiplier *= fg_mult
+            except Exception:
+                ai_multiplier = 1.0
+        raw *= ai_multiplier
+
         clamped = max(MIN_TRADE_SIZE_USD, min(MAX_TRADE_SIZE_USD, raw))
         return round(clamped, 2)
 
@@ -571,6 +602,17 @@ def get_trend_filter() -> str:
     now = time.time()
     if now - _trend_cache["ts"] < 300:
         return _trend_cache["trend"]
+
+    # Use AI multi-indicator trend if available
+    if AI and exchange:
+        try:
+            trend = AI.get_ai_trend(exchange)
+            _trend_cache = {"trend": trend, "ts": now}
+            return trend
+        except Exception:
+            pass
+
+    # Fallback: original simple logic
     try:
         if not exchange:
             return "neutral"
@@ -693,6 +735,17 @@ def spot_buy(symbol: str, usd_amount: float, strategy: str = "unknown") -> bool:
     if not exchange:
         log(f"[SPOT BUY] No exchange — skipping {symbol}")
         return False
+
+    # AI signal gate (additive — skip if AI unavailable)
+    if AI and strategy not in ("new_listing", "synced"):
+        try:
+            ai = AI.get_ai_score(exchange, symbol)
+            if ai["score"] < 40:
+                log(f"[AI GATE] {symbol} score {ai['score']:.0f} < 40 -> BLOCKED")
+                return False
+        except Exception:
+            pass
+
     try:
         ticker = safe_fetch_ticker(symbol)
         if not ticker or not ticker.get("last") or ticker["last"] <= 0:
@@ -2226,6 +2279,17 @@ def aggressive_profit_taker():
                     age_min = (now - pos.get("time", now)) / 60
                     pnl_pct, _, _ = calculate_pnl_after_fees(entry, price, 1.0, "long")
 
+                    # AI: RSI > 75 triggers partial profit taking
+                    if AI and pnl_pct > 0.5:
+                        try:
+                            if AI.should_take_partial_profit(exchange, sym):
+                                log(f"[AI RSI EXIT] {sym} RSI>75 + {pnl_pct:+.1f}% -> sell 50%")
+                                spot_sell(sym, reason="ai_rsi_overbought", fraction=0.5)
+                                time.sleep(0.7)
+                                continue
+                        except Exception:
+                            pass
+
                     # Age-based thresholds
                     if age_min < 15:
                         threshold = 4.0
@@ -2788,6 +2852,260 @@ def sync_positions_with_exchange():
 
 
 # =========================================================================
+# AI-POWERED WORKERS — Mean Reversion, EMA Crossover, Momentum, Grid
+# =========================================================================
+
+def mean_reversion_worker():
+    """Buy when RSI < 25 + price below lower Bollinger Band, sell when RSI > 70."""
+    log("[MEAN REVERT] AI mean reversion worker starting")
+    time.sleep(15)
+    if not AI:
+        log("[MEAN REVERT] AI module not available — exiting")
+        return
+    while True:
+        try:
+            if not exchange:
+                time.sleep(5)
+                continue
+            # Check exits first
+            with positions_lock:
+                pos_copy = {s: p for s, p in positions.items()
+                            if p.get("strategy") == "mean_reversion"}
+            for sym, pos in pos_copy.items():
+                try:
+                    ai = AI.get_ai_score(exchange, sym)
+                    if ai["rsi_1h"] > 70:
+                        log(f"[MEAN REVERT EXIT] {sym} RSI={ai['rsi_1h']:.0f} -> selling")
+                        spot_sell(sym, reason="mean_revert_rsi_exit")
+                except Exception:
+                    continue
+            # Scan for entries
+            scan = list(HOT_PAIRS if HOT_PAIRS else CORE_PAIRS)
+            random.shuffle(scan)
+            for sym in scan[:30]:
+                if not sym.endswith("/USDT"):
+                    continue
+                if not can_trade_symbol(sym):
+                    continue
+                try:
+                    ai = AI.get_ai_score(exchange, sym)
+                    if ai["rsi_1h"] < 25 and ai["bb_pct_b"] < 0.05:
+                        vol = get_24h_volume(sym)
+                        if vol < 50_000:
+                            continue
+                        capital = get_trade_capital("mean_reversion", sym)
+                        if capital < MIN_TRADE_SIZE_USD:
+                            continue
+                        log(f"[MEAN REVERT] {sym} RSI={ai['rsi_1h']:.0f} BB%={ai['bb_pct_b']:.2f} score={ai['score']:.0f} -> ${capital:.2f}")
+                        spot_buy(sym, capital, "mean_reversion")
+                        time.sleep(3)
+                except Exception:
+                    continue
+            time.sleep(30)
+        except Exception as e:
+            log(f"[MEAN REVERT ERROR] {e}")
+            time.sleep(10)
+
+
+def ema_crossover_worker():
+    """Enter on EMA12/EMA26 golden cross, exit on death cross."""
+    log("[EMA CROSS] AI EMA crossover worker starting")
+    time.sleep(15)
+    if not AI:
+        log("[EMA CROSS] AI module not available — exiting")
+        return
+    prev_cross = {}  # sym -> "above" | "below"
+    while True:
+        try:
+            if not exchange:
+                time.sleep(5)
+                continue
+            scan = list(set(s for s in (HOT_PAIRS or []) + CORE_PAIRS if s.endswith("/USDT")))
+            random.shuffle(scan)
+            for sym in scan[:25]:
+                try:
+                    candles = AI.fetch_ohlcv_cached(exchange, sym, "1h", 200)
+                    if not candles or len(candles) < 30:
+                        continue
+                    closes = [c[4] for c in candles]
+                    ema12 = AI.compute_ema(closes, 12)
+                    ema26 = AI.compute_ema(closes, 26)
+                    current_rel = "above" if ema12[-1] > ema26[-1] else "below"
+                    prev_rel = prev_cross.get(sym)
+                    prev_cross[sym] = current_rel
+                    if prev_rel is None:
+                        continue
+                    # Golden cross: EMA12 crosses above EMA26
+                    if prev_rel == "below" and current_rel == "above":
+                        if not can_trade_symbol(sym):
+                            continue
+                        ai = AI.get_ai_score(exchange, sym)
+                        if ai["score"] < 45:
+                            continue
+                        vol = get_24h_volume(sym)
+                        if vol < 50_000:
+                            continue
+                        capital = get_trade_capital("ema_crossover", sym)
+                        if capital < MIN_TRADE_SIZE_USD:
+                            continue
+                        log(f"[EMA CROSS] GOLDEN {sym} score={ai['score']:.0f} -> ${capital:.2f}")
+                        spot_buy(sym, capital, "ema_crossover")
+                        time.sleep(2)
+                    # Death cross: exit existing ema_crossover positions
+                    elif prev_rel == "above" and current_rel == "below":
+                        with positions_lock:
+                            pos = positions.get(sym)
+                            if pos and pos.get("strategy") == "ema_crossover":
+                                log(f"[EMA CROSS] DEATH {sym} -> selling")
+                                spot_sell(sym, reason="death_cross")
+                except Exception:
+                    continue
+            time.sleep(60)
+        except Exception as e:
+            log(f"[EMA CROSS ERROR] {e}")
+            time.sleep(10)
+
+
+def ai_momentum_worker():
+    """Only enter when composite AI score > 70, aggressive sizing."""
+    log("[AI MOMENTUM] AI high-conviction momentum worker starting")
+    time.sleep(15)
+    if not AI:
+        log("[AI MOMENTUM] AI module not available — exiting")
+        return
+    while True:
+        try:
+            if not exchange:
+                time.sleep(5)
+                continue
+            # Prioritize trending coins
+            trending_syms = AI.get_trending_symbols()
+            scan = list(set(trending_syms + (HOT_PAIRS if HOT_PAIRS else CORE_PAIRS)))
+            random.shuffle(scan)
+            for sym in scan[:30]:
+                if not sym.endswith("/USDT"):
+                    continue
+                if not can_trade_symbol(sym):
+                    continue
+                try:
+                    ai = AI.get_ai_score(exchange, sym)
+                    if ai["score"] >= 70 and ai["ema_trend"] == "bullish":
+                        vol = get_24h_volume(sym)
+                        if vol < 75_000:
+                            continue
+                        capital = get_trade_capital("ai_momentum", sym) * 1.5
+                        capital = min(capital, MAX_TRADE_SIZE_USD)
+                        if capital < MIN_TRADE_SIZE_USD:
+                            continue
+                        log(f"[AI MOM] {sym} SCORE={ai['score']:.0f} RSI={ai['rsi_1h']:.0f} trend={ai['ema_trend']} -> ${capital:.2f}")
+                        spot_buy(sym, capital, "ai_momentum")
+                        time.sleep(3)
+                except Exception:
+                    continue
+            time.sleep(45)
+        except Exception as e:
+            log(f"[AI MOMENTUM ERROR] {e}")
+            time.sleep(10)
+
+
+def grid_trading_worker():
+    """Place buy/sell grid around current price in sideways markets (ATR-based spacing)."""
+    log("[GRID] AI grid trading worker starting")
+    time.sleep(15)
+    if not AI:
+        log("[GRID] AI module not available — exiting")
+        return
+    active_grids = {}  # sym -> {center, buy_levels, sell_levels, filled_buys, filled_sells, ts}
+    MAX_GRIDS = 3
+    while True:
+        try:
+            if not exchange:
+                time.sleep(5)
+                continue
+            # Manage existing grids
+            for sym, grid in list(active_grids.items()):
+                try:
+                    ticker = safe_fetch_ticker(sym)
+                    if not ticker or not ticker.get("last"):
+                        continue
+                    price = ticker["last"]
+                    ai = AI.get_ai_score(exchange, sym)
+                    # Market is trending now — close grid
+                    if ai["adx"] > 30:
+                        log(f"[GRID] {sym} ADX={ai['adx']:.0f} trending -> closing grid")
+                        with positions_lock:
+                            if sym in positions:
+                                spot_sell(sym, reason="grid_trend_exit")
+                        del active_grids[sym]
+                        continue
+                    # Buy at lower grid levels
+                    for level in grid["buy_levels"]:
+                        if price <= level and level not in grid["filled_buys"]:
+                            capital = get_trade_capital("grid", sym) * 0.3
+                            if capital >= MIN_TRADE_SIZE_USD and can_trade_symbol(sym):
+                                log(f"[GRID BUY] {sym} @ level ${level:.6f}")
+                                if spot_buy(sym, capital, "grid"):
+                                    grid["filled_buys"].add(level)
+                    # Sell at upper grid levels
+                    for level in grid["sell_levels"]:
+                        if price >= level and level not in grid["filled_sells"]:
+                            with positions_lock:
+                                if sym in positions:
+                                    log(f"[GRID SELL] {sym} @ level ${level:.6f}")
+                                    spot_sell(sym, reason="grid_profit", fraction=0.3)
+                                    grid["filled_sells"].add(level)
+                    # Grid expired after 4 hours
+                    if time.time() - grid["ts"] > 14400:
+                        log(f"[GRID] {sym} expired -> closing")
+                        with positions_lock:
+                            if sym in positions:
+                                spot_sell(sym, reason="grid_expire")
+                        del active_grids[sym]
+                except Exception:
+                    continue
+            # Set up new grids in sideways markets
+            if len(active_grids) < MAX_GRIDS:
+                scan = list(CORE_PAIRS)
+                random.shuffle(scan)
+                for sym in scan[:15]:
+                    if sym in active_grids:
+                        continue
+                    try:
+                        ai = AI.get_ai_score(exchange, sym)
+                        if ai["adx"] > 20:
+                            continue
+                        vol = get_24h_volume(sym)
+                        if vol < 100_000:
+                            continue
+                        ticker = safe_fetch_ticker(sym)
+                        price = ticker["last"]
+                        candles = AI.fetch_ohlcv_cached(exchange, sym, "1h", 200)
+                        atr = AI.compute_atr(candles, 14)
+                        if atr <= 0:
+                            continue
+                        spacing = atr * 0.5
+                        num_levels = 3
+                        buy_levels = [price - spacing * (i + 1) for i in range(num_levels)]
+                        sell_levels = [price + spacing * (i + 1) for i in range(num_levels)]
+                        active_grids[sym] = {
+                            "center": price,
+                            "buy_levels": buy_levels,
+                            "sell_levels": sell_levels,
+                            "filled_buys": set(),
+                            "filled_sells": set(),
+                            "ts": time.time(),
+                        }
+                        log(f"[GRID] New grid: {sym} center=${price:.6f} spacing=${spacing:.6f} ADX={ai['adx']:.0f}")
+                        break
+                    except Exception:
+                        continue
+            time.sleep(30)
+        except Exception as e:
+            log(f"[GRID ERROR] {e}")
+            time.sleep(10)
+
+
+# =========================================================================
 # ENGINE BOOT
 # =========================================================================
 def start_empire():
@@ -2831,6 +3149,12 @@ def start_empire():
         # SPL token liquidator + SOL consolidation
         drip_sell_worker,
         consolidate_sol_worker,
+
+        # AI-powered strategies
+        mean_reversion_worker,
+        ema_crossover_worker,
+        ai_momentum_worker,
+        grid_trading_worker,
 
         # Perps
         perps_trading_worker,

@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EMPIRE Dashboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', -apple-system, sans-serif;
+    background: #0a0e17;
+    color: #e1e5ee;
+    min-height: 100vh;
+    padding: 20px;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid #1e2a3a;
+  }
+  .header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #f7931a, #ff6b35);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: 2px;
+  }
+  .header .status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #8892a4;
+  }
+  .header .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #22c55e;
+    animation: pulse 2s infinite;
+  }
+  .header .dot.error { background: #ef4444; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* Total portfolio */
+  .portfolio-total {
+    text-align: center;
+    margin-bottom: 28px;
+    padding: 24px;
+    background: linear-gradient(135deg, #111827, #1a2332);
+    border-radius: 16px;
+    border: 1px solid #1e2a3a;
+  }
+  .portfolio-total .label { font-size: 14px; color: #8892a4; margin-bottom: 4px; }
+  .portfolio-total .value {
+    font-size: 48px;
+    font-weight: 700;
+    color: #fff;
+  }
+
+  /* Stats row */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: #111827;
+    border: 1px solid #1e2a3a;
+    border-radius: 12px;
+    padding: 16px;
+    text-align: center;
+  }
+  .stat-card .label { font-size: 11px; color: #8892a4; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+  .stat-card .value { font-size: 22px; font-weight: 600; }
+
+  /* Sections */
+  .section {
+    margin-bottom: 24px;
+  }
+  .section-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #c9d1d9;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-title .icon { font-size: 18px; }
+
+  /* Cards grid */
+  .cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+  }
+
+  /* Asset card */
+  .asset-card {
+    background: #111827;
+    border: 1px solid #1e2a3a;
+    border-radius: 12px;
+    padding: 14px 16px;
+    transition: border-color 0.2s;
+  }
+  .asset-card:hover { border-color: #334155; }
+  .asset-card .coin-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 4px;
+  }
+  .asset-card .amount {
+    font-size: 13px;
+    color: #8892a4;
+    margin-bottom: 2px;
+  }
+  .asset-card .usd {
+    font-size: 18px;
+    font-weight: 600;
+    color: #22c55e;
+  }
+
+  /* Wallet card */
+  .wallet-card {
+    background: #111827;
+    border: 1px solid #1e2a3a;
+    border-radius: 12px;
+    padding: 14px 16px;
+  }
+  .wallet-card .addr {
+    font-size: 12px;
+    color: #6b7280;
+    font-family: monospace;
+    margin-bottom: 6px;
+  }
+  .wallet-card .bal {
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+  }
+  .wallet-card .usd { font-size: 14px; color: #22c55e; }
+  .wallet-card .spl-list {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid #1e2a3a;
+  }
+  .wallet-card .spl-item {
+    font-size: 12px;
+    color: #8892a4;
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 0;
+  }
+  .wallet-card .spl-item .mint { font-family: monospace; color: #6b7280; }
+
+  /* Table */
+  .table-wrap {
+    overflow-x: auto;
+    border-radius: 12px;
+    border: 1px solid #1e2a3a;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #111827;
+    font-size: 13px;
+  }
+  th {
+    text-align: left;
+    padding: 12px 14px;
+    background: #0d1117;
+    color: #8892a4;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid #1e2a3a;
+  }
+  td {
+    padding: 10px 14px;
+    border-bottom: 1px solid #1a1f2e;
+    color: #c9d1d9;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #151c28; }
+
+  /* Positions table */
+  .pos-symbol { font-weight: 600; color: #fff; }
+  .pos-type {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .pos-type.long { background: #064e3b; color: #34d399; }
+  .pos-type.short { background: #7f1d1d; color: #f87171; }
+  .pos-type.spot { background: #1e3a5f; color: #60a5fa; }
+
+  /* PnL colors */
+  .pnl-pos { color: #22c55e; font-weight: 600; }
+  .pnl-neg { color: #ef4444; font-weight: 600; }
+  .pnl-zero { color: #8892a4; }
+
+  /* Trend badge */
+  .trend-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .trend-badge.bullish { background: #064e3b; color: #34d399; }
+  .trend-badge.bearish { background: #7f1d1d; color: #f87171; }
+  .trend-badge.neutral { background: #1e293b; color: #94a3b8; }
+
+  /* Two column layout */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+  @media (max-width: 900px) {
+    .two-col { grid-template-columns: 1fr; }
+  }
+
+  /* Empty state */
+  .empty { color: #4b5563; font-style: italic; padding: 20px; text-align: center; }
+
+  /* Log section */
+  .log-box {
+    background: #0d1117;
+    border: 1px solid #1e2a3a;
+    border-radius: 12px;
+    padding: 12px 16px;
+    max-height: 300px;
+    overflow-y: auto;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #8892a4;
+  }
+  .log-box .log-line { white-space: pre-wrap; word-break: break-all; }
+  .log-box .log-line.buy { color: #22c55e; }
+  .log-box .log-line.sell { color: #ef4444; }
+  .log-box .log-line.error { color: #f59e0b; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>EMPIRE</h1>
+  <div class="status">
+    <div class="dot" id="statusDot"></div>
+    <span id="statusText">Connecting...</span>
+    <span style="margin-left:12px" id="lastUpdate"></span>
+  </div>
+</div>
+
+<div class="portfolio-total">
+  <div class="label">Total Portfolio Value</div>
+  <div class="value" id="totalUsd">$0.00</div>
+</div>
+
+<div class="stats-row" id="statsRow"></div>
+<div class="stats-row" id="aiBar" style="display:none"></div>
+
+<div class="two-col">
+  <div>
+    <div class="section">
+      <div class="section-title"><span class="icon">&#x1F3E6;</span> CEX Balances</div>
+      <div class="cards-grid" id="cexCards"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title"><span class="icon">&#x2600;</span> Solana Wallets</div>
+      <div class="cards-grid" id="solCards"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title"><span class="icon">&#x26A1;</span> EVM Wallets</div>
+      <div class="cards-grid" id="evmCards"></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="section">
+      <div class="section-title"><span class="icon">&#x1F4CA;</span> Open Positions</div>
+      <div class="table-wrap" id="posWrap"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title"><span class="icon">&#x1F4C8;</span> Recent Trades</div>
+      <div class="table-wrap" id="tradesWrap"></div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 8px;" id="kalshiSection" style="display:none">
+  <div class="section-title"><span class="icon">&#x1F3B2;</span> Kalshi Prediction Markets</div>
+  <div id="kalshiContent" class="cards-grid"></div>
+</div>
+
+<div class="section" style="margin-top: 8px;">
+  <div class="section-title"><span class="icon">&#x1F4DD;</span> Live Logs</div>
+  <div class="log-box" id="logBox"></div>
+</div>
+
+<script>
+const API = 'http://localhost:8222/empire_status';
+let lastData = null;
+
+function $(id) { return document.getElementById(id); }
+
+function fmt(n, dec=2) {
+  if (n == null || isNaN(n)) return '$0.00';
+  return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+}
+
+function pnlClass(v) {
+  if (v > 0) return 'pnl-pos';
+  if (v < 0) return 'pnl-neg';
+  return 'pnl-zero';
+}
+
+function pnlSign(v, dec=2) {
+  if (v == null || isNaN(v)) return '0.00';
+  const s = Number(v).toFixed(dec);
+  return v > 0 ? '+' + s : s;
+}
+
+function renderStats(data) {
+  const s = data.stats || {};
+  const items = [
+    { label: 'Total Trades', value: s.total_trades || 0, color: '#fff' },
+    { label: 'Total PnL', value: pnlSign(s.total_pnl_usd), color: (s.total_pnl_usd||0) >= 0 ? '#22c55e' : '#ef4444', prefix: '$' },
+    { label: 'Total Fees', value: fmt(s.total_fees_usd), color: '#f59e0b' },
+    { label: 'Wins', value: s.wins || 0, color: '#22c55e' },
+    { label: 'Losses', value: s.losses || 0, color: '#ef4444' },
+    { label: 'Trend', value: s.trend || 'neutral', badge: true },
+  ];
+  let html = '';
+  items.forEach(i => {
+    if (i.badge) {
+      const cls = i.value === 'bullish' ? 'bullish' : i.value === 'bearish' ? 'bearish' : 'neutral';
+      html += `<div class="stat-card"><div class="label">${i.label}</div><div class="value"><span class="trend-badge ${cls}">${i.value}</span></div></div>`;
+    } else {
+      html += `<div class="stat-card"><div class="label">${i.label}</div><div class="value" style="color:${i.color}">${i.prefix||''}${i.value}</div></div>`;
+    }
+  });
+  $('statsRow').innerHTML = html;
+}
+
+function renderAI(ai) {
+  if (!ai) { $('aiBar').style.display = 'none'; return; }
+  $('aiBar').style.display = '';
+  let html = '';
+  if (ai.fear_greed) {
+    const fg = ai.fear_greed;
+    const fgColor = fg.value < 30 ? '#ef4444' : fg.value < 50 ? '#f59e0b' : fg.value < 70 ? '#22c55e' : '#ef4444';
+    html += '<div class="stat-card"><div class="label">Fear & Greed</div>';
+    html += '<div class="value" style="color:' + fgColor + '">' + fg.value + '</div>';
+    html += '<div style="font-size:11px;color:#8892a4">' + fg.label + '</div></div>';
+  }
+  if (ai.trending && ai.trending.length > 0) {
+    html += '<div class="stat-card" style="grid-column: span 2"><div class="label">\u{1F525} Trending</div>';
+    html += '<div style="font-size:13px;color:#60a5fa">' + ai.trending.map(t => t.symbol).join(', ') + '</div></div>';
+  }
+  if (ai.scores && Object.keys(ai.scores).length > 0) {
+    html += '<div class="stat-card" style="grid-column: span 3"><div class="label">AI Scores</div><div style="font-size:12px;display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">';
+    Object.entries(ai.scores).forEach(([sym, s]) => {
+      const color = s.score >= 70 ? '#22c55e' : s.score >= 55 ? '#60a5fa' : s.score >= 45 ? '#8892a4' : '#ef4444';
+      const short = sym.replace('/USDT', '');
+      html += '<span style="color:' + color + '">' + short + ': ' + s.score + '</span>';
+    });
+    html += '</div></div>';
+  }
+  $('aiBar').innerHTML = html;
+}
+
+function renderCex(cex) {
+  if (!cex || Object.keys(cex).length === 0) {
+    $('cexCards').innerHTML = '<div class="empty">No CEX balances</div>';
+    return;
+  }
+  let html = '';
+  Object.entries(cex).forEach(([coin, info]) => {
+    html += `<div class="asset-card">
+      <div class="coin-name">${coin}</div>
+      <div class="amount">${Number(info.amount).toFixed(6)}</div>
+      <div class="usd">${fmt(info.usd)}</div>
+    </div>`;
+  });
+  $('cexCards').innerHTML = html;
+}
+
+function renderSolana(solana) {
+  if (!solana || solana.length === 0) {
+    $('solCards').innerHTML = '<div class="empty">No Solana wallets</div>';
+    return;
+  }
+  let html = '';
+  solana.forEach(w => {
+    let splHtml = '';
+    if (w.spl_tokens && w.spl_tokens.length > 0) {
+      splHtml = '<div class="spl-list">';
+      w.spl_tokens.forEach(t => {
+        splHtml += `<div class="spl-item"><span class="mint">${t.mint}</span><span>${Number(t.amount).toLocaleString()}</span></div>`;
+      });
+      splHtml += '</div>';
+    }
+    html += `<div class="wallet-card">
+      <div class="addr">${w.address}</div>
+      <div class="bal">${Number(w.sol).toFixed(5)} SOL</div>
+      <div class="usd">${fmt(w.usd)}</div>
+      ${splHtml}
+    </div>`;
+  });
+  $('solCards').innerHTML = html;
+}
+
+function renderEvm(evm) {
+  if (!evm || Object.keys(evm).length === 0) {
+    $('evmCards').innerHTML = '<div class="empty">No EVM wallets</div>';
+    return;
+  }
+  let html = '';
+  Object.entries(evm).forEach(([chain, info]) => {
+    html += `<div class="asset-card">
+      <div class="coin-name">${chain}</div>
+      <div class="amount">${Number(info.balance).toFixed(6)}</div>
+      <div class="usd">${fmt(info.usd)}</div>
+    </div>`;
+  });
+  $('evmCards').innerHTML = html;
+}
+
+function renderPositions(data) {
+  const all = {};
+  // Merge spot, futures, scalp positions
+  if (data.open_positions) Object.entries(data.open_positions).forEach(([k,v]) => { all[k] = {...v, source: 'spot'}; });
+  if (data.futures_positions) Object.entries(data.futures_positions).forEach(([k,v]) => { all[k] = {...v, source: 'futures'}; });
+  if (data.scalp_positions) Object.entries(data.scalp_positions).forEach(([k,v]) => { all[k] = {...v, source: 'scalp'}; });
+
+  if (Object.keys(all).length === 0) {
+    $('posWrap').innerHTML = '<div class="empty">No open positions</div>';
+    return;
+  }
+
+  let html = '<table><thead><tr><th>Symbol</th><th>Type</th><th>Entry</th><th>Qty</th><th>Strategy</th></tr></thead><tbody>';
+  Object.entries(all).forEach(([sym, pos]) => {
+    const posType = pos.type || pos.source || 'spot';
+    let typeClass = 'spot';
+    if (posType.includes('short')) typeClass = 'short';
+    else if (posType.includes('long') || posType.includes('margin')) typeClass = 'long';
+    html += `<tr>
+      <td class="pos-symbol">${sym}</td>
+      <td><span class="pos-type ${typeClass}">${posType}</span></td>
+      <td>${fmt(pos.entry, 6)}</td>
+      <td>${pos.qty ? Number(pos.qty).toFixed(4) : '-'}</td>
+      <td>${pos.strategy || '-'}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  $('posWrap').innerHTML = html;
+}
+
+function renderTrades(trades) {
+  if (!trades || trades.length === 0) {
+    $('tradesWrap').innerHTML = '<div class="empty">No recent trades</div>';
+    return;
+  }
+
+  let html = '<table><thead><tr><th>Time</th><th>Action</th><th>Symbol</th><th>Price</th><th>PnL %</th><th>Fee</th><th>Net PnL</th></tr></thead><tbody>';
+  trades.forEach(t => {
+    const time = t.time ? t.time.split('T')[1]?.substring(0,8) || t.time : '-';
+    const date = t.time ? t.time.split('T')[0] : '';
+    const actionColor = t.action?.includes('SELL') || t.action?.includes('CLOSE') ? '#ef4444' : '#22c55e';
+    const pnlPct = t.pnl_pct || 0;
+    const netPnl = t.pnl_net_usd || 0;
+    html += `<tr>
+      <td title="${date}">${time}</td>
+      <td style="color:${actionColor};font-weight:600">${t.action || '-'}</td>
+      <td class="pos-symbol">${t.symbol || '-'}</td>
+      <td>${t.price ? fmt(t.price, 6) : '-'}</td>
+      <td class="${pnlClass(pnlPct)}">${pnlSign(pnlPct)}%</td>
+      <td style="color:#f59e0b">${fmt(t.fee_usd)}</td>
+      <td class="${pnlClass(netPnl)}">${pnlSign(netPnl)}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  $('tradesWrap').innerHTML = html;
+}
+
+function renderLogs(logs) {
+  if (!logs || logs.length === 0) {
+    $('logBox').innerHTML = '<div class="empty">No logs yet</div>';
+    return;
+  }
+  let html = '';
+  logs.slice(-80).forEach(line => {
+    let cls = '';
+    if (/BUY|LONG|OPEN/i.test(line)) cls = 'buy';
+    else if (/SELL|CLOSE|SHORT|STOP/i.test(line)) cls = 'sell';
+    else if (/ERROR|WARN|FAIL/i.test(line)) cls = 'error';
+    html += `<div class="log-line ${cls}">${escHtml(line)}</div>`;
+  });
+  $('logBox').innerHTML = html;
+  // Auto-scroll to bottom
+  const box = $('logBox');
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderKalshi(kalshi) {
+  const sec = $('kalshiSection');
+  if (!kalshi || !kalshi.connected) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  let html = '';
+  html += `<div class="asset-card"><div class="coin-name">Balance</div><div class="usd">${fmt(kalshi.balance_usd)}</div></div>`;
+  html += `<div class="asset-card"><div class="coin-name">Positions</div><div class="usd" style="color:#60a5fa">${kalshi.position_count || 0}</div></div>`;
+  if (kalshi.positions && kalshi.positions.length > 0) {
+    kalshi.positions.forEach(p => {
+      const pnlCls = p.realized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+      html += `<div class="asset-card"><div class="coin-name">${p.ticker}</div><div class="amount">Exposure: ${fmt(p.market_exposure)}</div><div class="${pnlCls}">PnL: ${fmt(p.realized_pnl)}</div></div>`;
+    });
+  }
+  $('kalshiContent').innerHTML = html;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function fetchData() {
+  try {
+    const res = await fetch(API);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    lastData = data;
+
+    $('statusDot').className = 'dot';
+    $('statusText').textContent = 'LIVE';
+    $('lastUpdate').textContent = new Date().toLocaleTimeString();
+    $('totalUsd').textContent = fmt(data.total_usd);
+
+    renderStats(data);
+    renderAI(data.ai);
+    renderCex(data.cex);
+    renderSolana(data.solana);
+    renderEvm(data.evm);
+    renderPositions(data);
+    renderTrades(data.recent_trades);
+    renderKalshi(data.kalshi);
+    renderLogs(data.logs);
+
+  } catch (e) {
+    $('statusDot').className = 'dot error';
+    $('statusText').textContent = 'Disconnected — ' + e.message;
+  }
+}
+
+// Initial fetch + auto-refresh every 5 seconds
+fetchData();
+setInterval(fetchData, 5000);
+</script>
+
+</body>
+</html>

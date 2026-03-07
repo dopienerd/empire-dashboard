@@ -308,6 +308,11 @@
   </div>
 </div>
 
+<div class="section" style="margin-top: 8px;" id="kalshiSection" style="display:none">
+  <div class="section-title"><span class="icon">&#x1F3B2;</span> Kalshi Prediction Markets</div>
+  <div id="kalshiContent" class="cards-grid"></div>
+</div>
+
 <div class="section" style="margin-top: 8px;">
   <div class="section-title"><span class="icon">&#x1F4DD;</span> Live Logs</div>
   <div class="log-box" id="logBox"></div>
@@ -518,6 +523,22 @@ function renderLogs(logs) {
   box.scrollTop = box.scrollHeight;
 }
 
+function renderKalshi(kalshi) {
+  const sec = $('kalshiSection');
+  if (!kalshi || !kalshi.connected) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  let html = '';
+  html += `<div class="asset-card"><div class="coin-name">Balance</div><div class="usd">${fmt(kalshi.balance_usd)}</div></div>`;
+  html += `<div class="asset-card"><div class="coin-name">Positions</div><div class="usd" style="color:#60a5fa">${kalshi.position_count || 0}</div></div>`;
+  if (kalshi.positions && kalshi.positions.length > 0) {
+    kalshi.positions.forEach(p => {
+      const pnlCls = p.realized_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+      html += `<div class="asset-card"><div class="coin-name">${p.ticker}</div><div class="amount">Exposure: ${fmt(p.market_exposure)}</div><div class="${pnlCls}">PnL: ${fmt(p.realized_pnl)}</div></div>`;
+    });
+  }
+  $('kalshiContent').innerHTML = html;
+}
+
 function escHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
@@ -543,6 +564,7 @@ async function fetchData() {
     renderEvm(data.evm);
     renderPositions(data);
     renderTrades(data.recent_trades);
+    renderKalshi(data.kalshi);
     renderLogs(data.logs);
 
   } catch (e) {

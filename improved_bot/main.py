@@ -343,6 +343,7 @@ class EmpireHandler(BaseHTTPRequestHandler):
             data["open_positions"] = snapshot.get("positions", {})
             data["futures_positions"] = snapshot.get("futures_positions", {})
             data["scalp_positions"] = snapshot.get("scalp_positions", {})
+            data["kalshi"] = snapshot.get("kalshi")
         except Exception as e:
             data["stats"] = {}
             print(f"[DASHBOARD] Snapshot error: {e}")

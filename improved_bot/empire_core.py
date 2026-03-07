@@ -51,6 +51,12 @@ except ImportError:
     AI = None
     print("[WARN] empire_ai not found — running without AI signals")
 
+# Kalshi Prediction Markets
+try:
+    import empire_kalshi as KALSHI
+except ImportError:
+    KALSHI = None
+
 # =========================================================================
 # 2. THREAD SAFETY — LOCKS
 # =========================================================================
@@ -173,6 +179,13 @@ def dashboard_snapshot() -> dict:
             result["ai_data"] = AI.get_dashboard_ai_data(exchange, symbols)
         except Exception:
             result["ai_data"] = None
+
+    # Add Kalshi data if available
+    if KALSHI:
+        try:
+            result["kalshi"] = KALSHI.get_kalshi_dashboard_data()
+        except Exception:
+            result["kalshi"] = None
 
     return result
 
@@ -3160,6 +3173,13 @@ def start_empire():
         perps_trading_worker,
         perps_monitor,
     ]
+
+    # Add Kalshi worker if available
+    if KALSHI:
+        def _kalshi_worker():
+            KALSHI.kalshi_trading_worker(log_fn=log)
+        _kalshi_worker.__name__ = "kalshi_trading_worker"
+        workers.append(_kalshi_worker)
 
     for w in workers:
         try:
